@@ -1,0 +1,215 @@
+---
+title: "Introduction to PhysioSpaceMethods"
+author: "A. H. Esfahani"
+output: BiocStyle::html_document
+vignette: >
+  %\VignetteIndexEntry{Introduction to PhysioSpace}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = ">"
+)
+```
+
+PhysioSpace is a robust statistical method for relating high dimensional omics
+data sets^[Lenz, Michael, et al. "PhysioSpace: relating gene expression
+experiments from heterogeneous sources using shared physiological processes."
+PLoS One 8.10 (2013): e77627]. It is designed to take advantage of the vast
+availability of public omics data, which in combination with statistical
+approaches makes a potent tool capable of analyzing heterogeneous biological
+data sets.
+
+PhysioSpaceMethods is a R package which provides an implementation of
+PhysioSpace method alongside other handy functions for making PhysioSpace an
+easily accessible tool for R users.
+
+
+
+# Installation Instructions
+You can install this package by:
+```r
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("PhysioSpaceMethods", version = "devel")
+```
+
+# Usage Instructions
+PhysioSpaceMethods can map user samples inside a physiological space,
+calculated beforehand from a compendium of known samples. This process is 
+demonstrated here by an example.
+
+Before running through the example, we load all required packages of the
+vignette:
+```{r eval=FALSE, echo=TRUE}
+library(SummarizedExperiment) #SummarizedExperiment is needed for 
+                            #working with RangedSummarizedExperiment objects.
+library(limma) #For linear modelling and stat. testing
+library(biomaRt) #For ID conversion
+library(GEOquery) #For downloading datasets from GEO
+library(ExperimentHub) #Downloads datasets from ExperimentHub web service
+library(PhysioSpaceMethods) #Main package
+```
+```{r echo=FALSE}
+suppressPackageStartupMessages(library(SummarizedExperiment))
+suppressPackageStartupMessages(library(limma))
+suppressPackageStartupMessages(library(biomaRt))
+suppressPackageStartupMessages(library(GEOquery))
+suppressPackageStartupMessages(library(ExperimentHub))
+suppressPackageStartupMessages(library(PhysioSpaceMethods))
+```
+
+# E-MTAB-2836 Analysis Using PhysioSpaceMethods
+The data set used in this example is 
+[E-MTAB-2836](https://www.ebi.ac.uk/gxa/experiments/E-MTAB-2836/), 
+a RNA-seq atlas of coding RNA from tissue samples of 122
+_**human**_ individuals representing 32 
+different tissues, stored on ebi's 
+[Expression Atlas](https://www.ebi.ac.uk/gxa/home).
+
+Before starting the analysis, we need a physiological space in which we could
+map E-MTAB-2836 samples. There are spaces available in 'HumanPhysioSpace' 
+package, accessible at https://github.com/JRC-COMBINE/HumanPhysioSpace. For 
+demonstration purposes, we won't use that package. Instead, we will make a new
+physiological space in the next section, and use it through the rest of this 
+vignette.
+
+## Making a PhysioSpace out of Lukk et. al. human atlas
+In this ection we use lukk et. al. human atlas^[Lukk, Margus, et al. 
+"A global map of human gene expression." Nature biotechnology 28.4 
+(2010): 322.] to make a human tissue space.
+
+First we download the Lukk atlas gene expression data from [ExperimentHub](
+https://bioconductor.org/packages/release/bioc/html/ExperimentHub.html):
+```{r}
+hub <- ExperimentHub()
+print(hub)
+```
+
+
+
+
+
+## Example Two: GSE106635
+To show the application of PhysioSpace in plant stress analysis, we will
+analyse [GSE106635](
+https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE106635) from
+NCBI's [Gene Expression Omnibus or GEO](https://www.ncbi.nlm.nih.gov/geo/)
+as our second example.
+
+There are numerous ways to acquire a data set from GEO, for example by using
+[GEOquery](
+https://bioconductor.org/packages/release/bioc/html/GEOquery.html):
+```r
+#Downloading GSE106635:
+GSE106635 <- getGEO(GEO = "GSE106635", getGPL = FALSE)
+
+#Extracting ExpressionSet from the output list:
+GSE106635ESet <-
+  GSE106635$GSE106635_series_matrix.txt.gz
+```
+
+After downloading and normalising, we need to prepare the data before using
+it as InputData of calculatePhysioMap function.
+In this example we use signed p values as relative values in InputData:
+
+* **Convert gene expression data into a matrix of signed p values:** we
+calculate the signed p value of Student's t-test using the
+[limma](https://bioconductor.org/packages/release/bioc/html/limma.html)
+package (for more information about linear
+modelling and statistical testing, you can check limma package
+documentation).
+```r
+#Converting expression set to matrix:
+GSE106635ESetExp <- exprs(GSE106635ESet)
+#Modelling and statistical testing:
+DESIGN <- model.matrix(object = ~0+annot, data =
+data.frame(annot=c(rep("WT_Ctrl",2),rep("Mut_Ctrl",2),
+                      rep("WT_Cold",2),rep("Mut_Cold",2))))
+FITMain <- lmFit(GSE106635ESetExp, DESIGN)
+cont.matrix <- makeContrasts(contrasts =
+c("annotWT_Cold-annotWT_Ctrl","annotMut_Cold-annotMut_Ctrl"), levels=DESIGN)
+FITCont <- contrasts.fit(FITMain, cont.matrix)
+FITCont <- eBayes(FITCont)
+WTResults <- topTable(fit = FITCont, coef = "annotWT_Cold-annotWT_Ctrl",
+                      adjust.method="BH", number = Inf, sort.by = "none")
+MutResults <- topTable(fit = FITCont, coef = "annotMut_Cold-annotMut_Ctrl",
+                        adjust.method="BH", number = Inf, sort.by = "none")
+GSE106635SignedPValues <-
+cbind(-log2(WTResults$adj.P.Val)*sign(WTResults$logFC),
+      -log2(MutResults$adj.P.Val)*sign(MutResults$logFC))
+rownames(GSE106635SignedPValues) <- rownames(GSE106635ESetExp)
+```
+
+* **Have genes in rows and samples in columns, with Entrez IDs in rownames:**
+For converting the Affymetrix ATH1 probe IDs to Entrez IDs
+we use [biomaRt's package](
+https://bioconductor.org/packages/release/bioc/html/biomaRt.html):
+```r
+#Converting AffyID to EntrezID:
+planaRt <- useMart(biomart = "plants_mart", host = "plants.ensembl.org",
+                                            dataset = "athaliana_eg_gene")
+ConvTabelle <- getBM(attributes = c("affy_ath1_121501","entrezgene"),
+                            filters = "affy_ath1_121501",
+                              values = rownames(GSE106635SignedPValues),
+                                  mart = planaRt)
+rownames(GSE106635SignedPValues) <-
+ConvTabelle$entrezgene[match(rownames(GSE106635SignedPValues),
+                                  ConvTabelle$affy_ath1_121501)]
+GSE106635SignedPValues <-
+          GSE106635SignedPValues[!is.na(rownames(GSE106635SignedPValues)),]
+```
+
+* **Have RELATIVE values for gene expression:** In this example, since we
+calculated signed p values, numbers in GSE106635SignedPValues are already
+relative.
+
+* **Writing sample names in colnames:** In GSE106635SignedPValues, first
+column corresponds to wild type Col-0 response to cold stress, and second
+column to TabZIP6-overexpressed Arabidopsis line (L20) response to cold
+stress. We will name samples as follows:
+```r
+#Writing names into colnames:
+colnames(GSE106635SignedPValues) <- c("WT_Cold","Mut_Cold")
+```
+
+Now that we prepared the input, the main calculation can be done using the
+function calculatePhysioMap():
+```r
+#Main calculation:
+RESULTS <- calculatePhysioMap(InputData = GSE106635SignedPValues,
+                                              Space = AT_Stress_Space)
+```
+Note that as mentioned in the last example, calculatePhysioMap() has to have
+at least two inputs: 'InputData' which in this case is the signed p value
+matrix, and 'Space' which is the Physiology Space in which we want the
+InputData to be mapped. In this example we used AT_Stress_Space from
+[PlantPhysioSpace](https://github.com/JRC-COMBINE/PlantPhysioSpace)
+package as Space. For more information about the
+available plant spaces and detailed explanation about AT_Stress_Space, we
+recommend the reader to check the documentation of the
+[PlantPhysioSpace](https://github.com/JRC-COMBINE/PlantPhysioSpace) package.
+
+All samples in GSE106635 are under cold stress condition, so we expect to see
+high values (similarities) on the 'Cold' dimension of
+the AT_Stress_Space:
+```r
+#Plotting the results:
+PhysioHeatmap(PhysioResults = RESULTS, main = "Stress Analysis of GSE106635",
+SymmetricColoring = TRUE, SpaceClustering = TRUE, Space = AT_Stress_Space,
+                                                              PlotSize = 21)
+```
+
+As shown in Fig. 2, samples of GSE106635 are detected as plants under cold
+stress. Looking deeper into the RESULTS, analysis points toward a higher cold
+stress response in wild type Arabidopsis, in comparison to
+TabZIP6-overexpressed ecotype (RESULTS[4,1] > RESULTS[4,2]). This conclusion
+is in line with the conclusion published by the cited paper of GSE106635^[Cai
+W, Yang Y, Wang W, Guo G et al. Overexpression of a wheat (Triticum aestivum
+L.) bZIP transcription factor gene, TabZIP6, decreased the freezing tolerance
+of transgenic Arabidopsis seedlings by down-regulating the expression of CBFs.
+Plant Physiol Biochem 2018 Mar;124:100-111.].
+
